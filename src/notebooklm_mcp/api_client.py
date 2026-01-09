@@ -5,6 +5,7 @@ Internal API. See CLAUDE.md for full documentation.
 """
 
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -13,6 +14,26 @@ from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+    before_sleep_log,
+)
+
+# Set up logging for retry visibility
+logger = logging.getLogger(__name__)
+
+
+class RetryableError(Exception):
+    """Errors that should trigger retry (rate limits, server errors, network issues)."""
+    pass
+
+
+class AuthExpiredError(Exception):
+    """Authentication has expired, requires manual re-auth."""
+    pass
 
 
 # Ownership constants (from metadata position 0)
@@ -438,6 +459,13 @@ class NotebookLMClient:
                             return result_str
         return None
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(RetryableError),
+        before_sleep=before_sleep_log(logger, logging.WARNING),
+        reraise=True,
+    )
     def _call_rpc(
         self,
         rpc_id: str,
@@ -445,17 +473,52 @@ class NotebookLMClient:
         path: str = "/",
         timeout: float | None = None,
     ) -> Any:
-        """Execute an RPC call and return the extracted result."""
+        """Execute an RPC call and return the extracted result.
+
+        Automatically retries on:
+        - Rate limit errors (429)
+        - Server errors (500, 502, 503, 504)
+        - Network timeouts and connection errors
+
+        Raises AuthExpiredError for auth failures (401, 403).
+        """
         client = self._get_client()
         body = self._build_request_body(rpc_id, params)
         url = self._build_url(rpc_id, path)
-        if timeout:
-            response = client.post(url, content=body, timeout=timeout)
-        else:
-            response = client.post(url, content=body)
-        response.raise_for_status()
-        parsed = self._parse_response(response.text)
-        return self._extract_rpc_result(parsed, rpc_id)
+
+        try:
+            if timeout:
+                response = client.post(url, content=body, timeout=timeout)
+            else:
+                response = client.post(url, content=body)
+
+            # Handle specific status codes
+            if response.status_code == 429:
+                raise RetryableError("Rate limited by Google API, will retry")
+
+            if response.status_code in (500, 502, 503, 504):
+                raise RetryableError(f"Server error {response.status_code}, will retry")
+
+            if response.status_code in (401, 403):
+                raise AuthExpiredError(
+                    "Authentication expired. Run 'notebooklm-mcp-auth' to refresh credentials."
+                )
+
+            response.raise_for_status()
+            parsed = self._parse_response(response.text)
+            return self._extract_rpc_result(parsed, rpc_id)
+
+        except httpx.TimeoutException as e:
+            raise RetryableError(f"Request timed out: {e}") from e
+        except httpx.NetworkError as e:
+            raise RetryableError(f"Network error: {e}") from e
+        except httpx.HTTPStatusError as e:
+            # Catch any other HTTP errors not handled above
+            if e.response.status_code in (401, 403):
+                raise AuthExpiredError(
+                    "Authentication expired. Run 'notebooklm-mcp-auth' to refresh credentials."
+                ) from e
+            raise
 
     # =========================================================================
     # Conversation Management (for query follow-ups)

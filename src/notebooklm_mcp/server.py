@@ -1,10 +1,52 @@
 """NotebookLM MCP Server."""
 
-from typing import Any
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Literal
 
 from fastmcp import FastMCP
+from pydantic import BaseModel
 
-from .api_client import NotebookLMClient, extract_cookies_from_chrome_export, parse_timestamp
+from .api_client import (
+    NotebookLMClient,
+    extract_cookies_from_chrome_export,
+    parse_timestamp,
+    AuthExpiredError,
+    RetryableError,
+)
+
+
+# ============================================================================
+# Structured Error Responses
+# ============================================================================
+
+
+class ErrorResponse(BaseModel):
+    """Structured error response for actionable error messages."""
+
+    status: Literal["error"]
+    error: str
+    action: str | None = None
+    details: str | None = None
+
+
+def make_error(error: str, action: str | None = None, details: str | None = None) -> dict:
+    """Create consistent, actionable error response.
+
+    Args:
+        error: Short error description
+        action: What the user should do to fix it
+        details: Additional context
+
+    Returns:
+        Dict representation of ErrorResponse
+    """
+    return ErrorResponse(
+        status="error",
+        error=error,
+        action=action,
+        details=details,
+    ).model_dump(exclude_none=True)
 
 # Initialize MCP server
 mcp = FastMCP(
@@ -1822,6 +1864,88 @@ def save_auth_tokens(
         }
     except Exception as e:
         return {"status": "error", "error": str(e)}
+
+
+@mcp.tool()
+def auth_status() -> dict[str, Any]:
+    """Check authentication status and cookie validity.
+
+    Returns current auth state including:
+    - Whether credentials exist
+    - Approximate cookie age (if determinable)
+    - Whether a test request succeeds
+
+    Use this before starting work to verify NotebookLM access is working.
+    """
+    import json
+
+    from .auth import load_cached_tokens, get_cache_path
+
+    auth_file = get_cache_path()
+
+    if not auth_file.exists():
+        return make_error(
+            error="No credentials found",
+            action="Run 'notebooklm-mcp-auth' to authenticate",
+            details="Authentication file not found at ~/.notebooklm-mcp/auth.json",
+        )
+
+    try:
+        # Load and check cookie age
+        cached = load_cached_tokens()
+        if not cached:
+            return make_error(
+                error="Invalid credentials file",
+                action="Run 'notebooklm-mcp-auth' to re-authenticate",
+                details="Could not parse cached tokens",
+            )
+
+        extracted_at = cached.extracted_at
+        age_warning = None
+        age_days = None
+
+        if extracted_at:
+            age_seconds = datetime.now().timestamp() - extracted_at
+            age_days = int(age_seconds / 86400)  # 86400 seconds per day
+
+            if age_days > 10:
+                age_warning = f"Cookies are {age_days} days old. Consider re-authenticating soon."
+            elif age_days > 7:
+                age_warning = f"Cookies are {age_days} days old. They may expire soon."
+
+        # Test with a lightweight API call
+        try:
+            client = get_client()
+            notebooks = client.list_notebooks()
+
+            return {
+                "status": "success",
+                "authenticated": True,
+                "notebook_count": len(notebooks),
+                "cookie_age_days": age_days,
+                "warning": age_warning,
+                "cache_path": str(auth_file),
+            }
+
+        except AuthExpiredError:
+            return make_error(
+                error="Authentication expired",
+                action="Run 'notebooklm-mcp-auth' to refresh credentials",
+                details="Test request failed with auth error. Google session cookies have expired.",
+            )
+        except RetryableError as e:
+            return make_error(
+                error="Connection test failed after retries",
+                action="Check your network connection and try again",
+                details=str(e),
+            )
+
+    except Exception as e:
+        return make_error(
+            error="Authentication check failed",
+            action="Run 'notebooklm-mcp-auth' if problems persist",
+            details=str(e),
+        )
 
 
 def main():
