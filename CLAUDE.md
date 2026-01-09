@@ -127,6 +127,9 @@ src/notebooklm_mcp/
 | `studio_status` | Check studio artifact generation status |
 | `studio_delete` | Delete studio artifacts (REQUIRES confirmation) |
 | `save_auth_tokens` | Save tokens extracted via Chrome DevTools MCP |
+| `auth_status` | Check authentication status and cookie validity |
+| `batch_query` | Run multiple queries across notebooks sequentially |
+| `export` | Export notebook content (markdown, json, text formats) |
 
 **IMPORTANT - Operations Requiring Confirmation:**
 - `notebook_delete` requires `confirm=True` - deletion is IRREVERSIBLE
@@ -139,7 +142,7 @@ src/notebooklm_mcp/
 
 - [ ] **Notes** - Save chat responses as notes
 - [ ] **Share notebook** - Collaboration features
-- [ ] **Export** - Download content
+- [x] **Export** - Download content (implemented via `export` tool)
 
 ## Troubleshooting
 
