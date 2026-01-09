@@ -465,7 +465,6 @@ class NotebookLMClient:
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type(RetryableError),
         before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True,
     )
     def _call_rpc(
         self,

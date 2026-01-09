@@ -7,6 +7,8 @@ from typing import Any, Literal
 from fastmcp import FastMCP
 from pydantic import BaseModel
 
+import time
+
 from .api_client import (
     NotebookLMClient,
     extract_cookies_from_chrome_export,
@@ -14,6 +16,7 @@ from .api_client import (
     AuthExpiredError,
     RetryableError,
 )
+from .auth import load_cached_tokens, get_cache_path
 
 
 # ============================================================================
@@ -70,8 +73,6 @@ def get_client() -> NotebookLMClient:
     global _client
     if _client is None:
         import os
-
-        from .auth import load_cached_tokens
 
         cookie_header = os.environ.get("NOTEBOOKLM_COOKIES", "")
         csrf_token = os.environ.get("NOTEBOOKLM_CSRF_TOKEN", "")
@@ -1237,7 +1238,8 @@ def infographic_create(
         detail_level: concise|standard|detailed
         language: BCP-47 code (en, es, fr, de, ja)
         focus_prompt: Optional focus text
-        remove_watermark: Remove watermark (requires Ultra subscription)
+        remove_watermark: Remove watermark (requires Ultra subscription).
+            EXPERIMENTAL: API position unverified, may not work correctly.
         confirm: Must be True after user approval
     """
     if not confirm:
@@ -1344,7 +1346,8 @@ def slide_deck_create(
         length: short|default|long (long requires Ultra subscription)
         language: BCP-47 code (en, es, fr, de, ja)
         focus_prompt: Optional focus text
-        remove_watermark: Remove watermark (requires Ultra subscription)
+        remove_watermark: Remove watermark (requires Ultra subscription).
+            EXPERIMENTAL: API position unverified, may not work correctly.
         confirm: Must be True after user approval
     """
     if not confirm:
@@ -1886,6 +1889,7 @@ def save_auth_tokens(
 def batch_query(
     queries: list[dict],
     continue_on_error: bool = True,
+    delay_seconds: float = 0.5,
 ) -> dict[str, Any]:
     """Run multiple queries across notebooks sequentially.
 
@@ -1898,6 +1902,7 @@ def batch_query(
             - query: str (required)
             - source_ids: list[str] | None (optional, defaults to all)
         continue_on_error: If True, continue with remaining queries on failure
+        delay_seconds: Delay between queries to avoid rate limiting (default: 0.5)
 
     Returns:
         {
@@ -1928,6 +1933,10 @@ def batch_query(
         failed = 0
 
         for i, q in enumerate(queries):
+            # Rate limiting delay between queries
+            if i > 0 and delay_seconds > 0:
+                time.sleep(delay_seconds)
+
             notebook_id = q.get("notebook_id")
             query_text = q.get("query")
             source_ids = q.get("source_ids")
@@ -2218,10 +2227,6 @@ def auth_status() -> dict[str, Any]:
 
     Use this before starting work to verify NotebookLM access is working.
     """
-    import json
-
-    from .auth import load_cached_tokens, get_cache_path
-
     auth_file = get_cache_path()
 
     if not auth_file.exists():
