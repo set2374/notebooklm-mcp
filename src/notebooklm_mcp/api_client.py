@@ -5,19 +5,58 @@ Internal API. See CLAUDE.md for full documentation.
 """
 
 import json
+import logging
 import os
 import re
+import time
 import urllib.parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 
+# Configure module logger
+logger = logging.getLogger(__name__)
+
 
 # Ownership constants (from metadata position 0)
 OWNERSHIP_MINE = 1
 OWNERSHIP_SHARED = 2
+
+# Response array index constants (for parsing NotebookLM API responses)
+# Notebook metadata indices
+IDX_NOTEBOOK_TITLE = 0
+IDX_NOTEBOOK_SOURCES = 1
+IDX_NOTEBOOK_ID = 2
+IDX_NOTEBOOK_EMOJI = 3
+IDX_NOTEBOOK_METADATA = 5
+
+# Source metadata indices
+IDX_SOURCE_ID = 0
+IDX_SOURCE_TITLE = 1
+IDX_SOURCE_METADATA = 2
+
+# Artifact status indices
+IDX_ARTIFACT_ID = 0
+IDX_ARTIFACT_TITLE = 1
+IDX_ARTIFACT_TYPE = 2
+IDX_ARTIFACT_STATUS = 4
+
+# Status codes
+STATUS_IN_PROGRESS = 1
+STATUS_COMPLETED = 3
+
+# Retry configuration
+MAX_RETRIES = 3
+RETRY_BACKOFF_BASE = 2.0  # seconds
+RETRY_BACKOFF_MAX = 16.0  # seconds
+
+# Default User-Agent (configurable via environment variable)
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+
+# Maximum conversation cache size (LRU eviction)
+MAX_CONVERSATION_CACHE_SIZE = 100
 
 
 @dataclass
@@ -197,19 +236,27 @@ class NotebookLMClient:
     # Query endpoint (different from batchexecute - streaming gRPC-style)
     QUERY_ENDPOINT = "/_/LabsTailwindUi/data/google.internal.labs.tailwind.orchestration.v1.LabsTailwindOrchestrationService/GenerateFreeFormStreamed"
 
-    # Headers required for page fetch (must look like a browser navigation)
-    _PAGE_FETCH_HEADERS = {
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "sec-ch-ua": '"Google Chrome";v="143", "Chromium";v="143", "Not A(Brand";v="24"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"macOS"',
-    }
+    @staticmethod
+    def _get_user_agent() -> str:
+        """Get User-Agent from environment or use default."""
+        return os.environ.get("NOTEBOOKLM_USER_AGENT", DEFAULT_USER_AGENT)
+
+    @classmethod
+    def _get_page_fetch_headers(cls) -> dict[str, str]:
+        """Get headers for page fetch with configurable User-Agent."""
+        user_agent = cls._get_user_agent()
+        return {
+            "User-Agent": user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "none",
+            "Sec-Fetch-User": "?1",
+            "sec-ch-ua": '"Google Chrome";v="131", "Chromium";v="131", "Not A(Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"macOS"',
+        }
 
     def __init__(self, cookies: dict[str, str], csrf_token: str = "", session_id: str = ""):
         """
@@ -220,17 +267,19 @@ class NotebookLMClient:
             csrf_token: CSRF token (optional - will be auto-extracted from page if not provided)
             session_id: Session ID (optional - will be auto-extracted from page if not provided)
         """
+        import random
+
         self.cookies = cookies
         self.csrf_token = csrf_token
         self._client: httpx.Client | None = None
         self._session_id = session_id
 
-        # Conversation cache for follow-up queries
+        # Conversation cache for follow-up queries with LRU eviction
         # Key: conversation_id, Value: list of ConversationTurn objects
         self._conversation_cache: dict[str, list[ConversationTurn]] = {}
+        self._conversation_access_order: list[str] = []  # Track access order for LRU
 
         # Request counter for _reqid parameter (required for query endpoint)
-        import random
         self._reqid_counter = random.randint(100000, 999999)
 
         # ALWAYS refresh CSRF token on initialization - they expire quickly (minutes)
@@ -251,7 +300,7 @@ class NotebookLMClient:
         cookie_header = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
 
         # Must use browser-like headers for page fetch
-        headers = {**self._PAGE_FETCH_HEADERS, "Cookie": cookie_header}
+        headers = {**self._get_page_fetch_headers(), "Cookie": cookie_header}
 
         # Use a temporary client for the page fetch
         with httpx.Client(headers=headers, follow_redirects=True, timeout=15.0) as client:
@@ -300,7 +349,6 @@ class NotebookLMClient:
         significantly improving performance for subsequent API calls.
         """
         try:
-            import time
             from .auth import AuthTokens, save_tokens_to_cache, load_cached_tokens
 
             # Load existing cache or create new
@@ -319,12 +367,12 @@ class NotebookLMClient:
                 )
 
             save_tokens_to_cache(cached, silent=True)
-        except Exception:
-            # Silently fail - caching is an optimization, not critical
-            pass
+        except Exception as e:
+            # Caching is an optimization, not critical - log and continue
+            logger.debug(f"Failed to update cached tokens: {e}")
 
     def _get_client(self) -> httpx.Client:
-        """Get or create HTTP client."""
+        """Get or create HTTP client with configurable User-Agent."""
         if self._client is None:
             # Build cookie string
             cookie_str = "; ".join(f"{k}={v}" for k, v in self.cookies.items())
@@ -336,7 +384,7 @@ class NotebookLMClient:
                     "Referer": f"{self.BASE_URL}/",
                     "Cookie": cookie_str,
                     "X-Same-Domain": "1",
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "User-Agent": self._get_user_agent(),
                 },
                 timeout=30.0,
             )
@@ -445,17 +493,54 @@ class NotebookLMClient:
         path: str = "/",
         timeout: float | None = None,
     ) -> Any:
-        """Execute an RPC call and return the extracted result."""
+        """Execute an RPC call with retry logic for transient failures.
+
+        Retries on network errors with exponential backoff.
+        Does NOT retry on HTTP 4xx errors (client errors).
+        """
         client = self._get_client()
         body = self._build_request_body(rpc_id, params)
         url = self._build_url(rpc_id, path)
-        if timeout:
-            response = client.post(url, content=body, timeout=timeout)
-        else:
-            response = client.post(url, content=body)
-        response.raise_for_status()
-        parsed = self._parse_response(response.text)
-        return self._extract_rpc_result(parsed, rpc_id)
+
+        last_exception: Exception | None = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                if timeout:
+                    response = client.post(url, content=body, timeout=timeout)
+                else:
+                    response = client.post(url, content=body)
+                response.raise_for_status()
+                parsed = self._parse_response(response.text)
+                return self._extract_rpc_result(parsed, rpc_id)
+
+            except httpx.HTTPStatusError as e:
+                # Don't retry client errors (4xx)
+                if 400 <= e.response.status_code < 500:
+                    logger.warning(f"RPC {rpc_id} failed with client error: {e.response.status_code}")
+                    raise
+                last_exception = e
+
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as e:
+                # Retry on network errors
+                last_exception = e
+
+            except Exception as e:
+                # Don't retry on unexpected errors
+                logger.error(f"RPC {rpc_id} failed with unexpected error: {e}")
+                raise
+
+            # Calculate backoff with exponential increase, capped at max
+            if attempt < MAX_RETRIES - 1:
+                backoff = min(RETRY_BACKOFF_BASE * (2 ** attempt), RETRY_BACKOFF_MAX)
+                logger.info(f"RPC {rpc_id} failed (attempt {attempt + 1}/{MAX_RETRIES}), retrying in {backoff}s...")
+                time.sleep(backoff)
+
+        # All retries exhausted
+        logger.error(f"RPC {rpc_id} failed after {MAX_RETRIES} attempts")
+        if last_exception:
+            raise last_exception
+        raise RuntimeError(f"RPC {rpc_id} failed after {MAX_RETRIES} attempts")
 
     # =========================================================================
     # Conversation Management (for query follow-ups)
@@ -493,19 +578,42 @@ class NotebookLMClient:
         self, conversation_id: str, query: str, answer: str
     ) -> None:
         """Cache a conversation turn for future follow-up queries.
-    """
+
+        Uses LRU eviction to prevent unbounded memory growth.
+        When cache exceeds MAX_CONVERSATION_CACHE_SIZE, oldest conversations are removed.
+        """
+        # Add new conversation or update existing
         if conversation_id not in self._conversation_cache:
             self._conversation_cache[conversation_id] = []
+            # Add to access order tracking
+            self._conversation_access_order.append(conversation_id)
+        else:
+            # Move to end of access order (most recently used)
+            if conversation_id in self._conversation_access_order:
+                self._conversation_access_order.remove(conversation_id)
+            self._conversation_access_order.append(conversation_id)
 
         turn_number = len(self._conversation_cache[conversation_id]) + 1
         turn = ConversationTurn(query=query, answer=answer, turn_number=turn_number)
         self._conversation_cache[conversation_id].append(turn)
 
+        # LRU eviction if cache exceeds max size
+        while len(self._conversation_cache) > MAX_CONVERSATION_CACHE_SIZE:
+            if self._conversation_access_order:
+                oldest_id = self._conversation_access_order.pop(0)
+                if oldest_id in self._conversation_cache:
+                    del self._conversation_cache[oldest_id]
+                    logger.debug(f"Evicted conversation {oldest_id} from cache (LRU)")
+            else:
+                break
+
     def clear_conversation(self, conversation_id: str) -> bool:
         """Clear the conversation cache for a specific conversation.
-    """
+        """
         if conversation_id in self._conversation_cache:
             del self._conversation_cache[conversation_id]
+            if conversation_id in self._conversation_access_order:
+                self._conversation_access_order.remove(conversation_id)
             return True
         return False
 
@@ -1147,7 +1255,7 @@ class NotebookLMClient:
             if source_list and len(source_list) > 0:
                 source_data = source_list[0]
                 source_id = source_data[0][0] if source_data[0] else None
-                source_title = source_data[1] if len(source_data) > 1 else document_name
+                source_title = source_data[1] if len(source_data) > 1 else title
                 return {"id": source_id, "title": source_title}
         return None
 
