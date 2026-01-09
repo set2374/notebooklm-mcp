@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "notebooklm-mcp-server"
+version = "0.1.4"
+description = "MCP server for NotebookLM (notebooklm.google.com)"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Jacob Ben-David" }
+]
+keywords = ["mcp", "notebooklm", "google", "ai", "research"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+    "fastmcp>=0.1.0",
+    "httpx>=0.27.0",
+    "websocket-client>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+]
+
+[project.scripts]
+notebooklm-mcp = "notebooklm_mcp.server:main"
+notebooklm-mcp-auth = "notebooklm_mcp.auth_cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/notebooklm_mcp"]
