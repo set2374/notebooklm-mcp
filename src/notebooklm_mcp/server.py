@@ -1877,6 +1877,336 @@ def save_auth_tokens(
         return {"status": "error", "error": str(e)}
 
 
+# ============================================================================
+# Phase 3: Legal Research Tools
+# ============================================================================
+
+
+@mcp.tool()
+def batch_query(
+    queries: list[dict],
+    continue_on_error: bool = True,
+) -> dict[str, Any]:
+    """Run multiple queries across notebooks sequentially.
+
+    Useful for legal research across multiple case files or running
+    a series of related queries against a single notebook.
+
+    Args:
+        queries: List of query objects, each with:
+            - notebook_id: str (required)
+            - query: str (required)
+            - source_ids: list[str] | None (optional, defaults to all)
+        continue_on_error: If True, continue with remaining queries on failure
+
+    Returns:
+        {
+            "status": "success" | "partial" | "error",
+            "total": int,
+            "succeeded": int,
+            "failed": int,
+            "results": [...]
+        }
+
+    Example:
+        batch_query(queries=[
+            {"notebook_id": "abc123", "query": "What are the key findings?"},
+            {"notebook_id": "def456", "query": "Summarize the plaintiff's arguments"},
+            {"notebook_id": "abc123", "query": "List all cited precedents"}
+        ])
+    """
+    if not queries:
+        return make_error(
+            error="No queries provided",
+            action="Provide a list of query objects with notebook_id and query fields",
+        )
+
+    try:
+        client = get_client()
+        results = []
+        succeeded = 0
+        failed = 0
+
+        for i, q in enumerate(queries):
+            notebook_id = q.get("notebook_id")
+            query_text = q.get("query")
+            source_ids = q.get("source_ids")
+
+            if not notebook_id or not query_text:
+                results.append({
+                    "index": i,
+                    "notebook_id": notebook_id,
+                    "query": query_text,
+                    "status": "error",
+                    "answer": None,
+                    "error": "Missing required field: notebook_id or query"
+                })
+                failed += 1
+                continue
+
+            try:
+                result = client.query(
+                    notebook_id,
+                    query_text=query_text,
+                    source_ids=source_ids,
+                )
+
+                if result:
+                    results.append({
+                        "index": i,
+                        "notebook_id": notebook_id,
+                        "query": query_text,
+                        "status": "success",
+                        "answer": result.get("answer", ""),
+                        "conversation_id": result.get("conversation_id"),
+                        "error": None
+                    })
+                    succeeded += 1
+                else:
+                    results.append({
+                        "index": i,
+                        "notebook_id": notebook_id,
+                        "query": query_text,
+                        "status": "error",
+                        "answer": None,
+                        "error": "Query returned no result"
+                    })
+                    failed += 1
+
+            except AuthExpiredError:
+                # Auth errors should stop everything
+                return make_error(
+                    error="Authentication expired during batch query",
+                    action="Run 'notebooklm-mcp-auth' to refresh credentials",
+                    details=f"Failed at query {i + 1} of {len(queries)}. {succeeded} queries succeeded before failure."
+                )
+
+            except Exception as e:
+                results.append({
+                    "index": i,
+                    "notebook_id": notebook_id,
+                    "query": query_text,
+                    "status": "error",
+                    "answer": None,
+                    "error": str(e)
+                })
+                failed += 1
+
+                if not continue_on_error:
+                    break
+
+        # Determine overall status
+        if failed == 0:
+            status = "success"
+        elif succeeded == 0:
+            status = "error"
+        else:
+            status = "partial"
+
+        return {
+            "status": status,
+            "total": len(queries),
+            "succeeded": succeeded,
+            "failed": failed,
+            "results": results,
+        }
+
+    except AuthExpiredError:
+        return make_error(
+            error="Authentication expired",
+            action="Run 'notebooklm-mcp-auth' to refresh credentials",
+        )
+    except Exception as e:
+        return make_error(
+            error="Batch query failed",
+            action="Check query format and try again",
+            details=str(e)
+        )
+
+
+@mcp.tool()
+def export(
+    notebook_id: str,
+    format: str = "markdown",
+    include_sources: bool = True,
+    include_summary: bool = True,
+) -> dict[str, Any]:
+    """Export notebook content for external use.
+
+    Extracts source content and optionally notebook summary for
+    case file compilation or client deliverables.
+
+    Args:
+        notebook_id: Notebook UUID
+        format: Output format - "markdown" | "json" | "text"
+        include_sources: Include full source content (default: True)
+        include_summary: Include AI-generated notebook summary (default: True)
+
+    Returns:
+        {
+            "status": "success",
+            "notebook_id": str,
+            "title": str,
+            "format": str,
+            "summary": str | None,
+            "sources": [...],
+            "total_chars": int,
+            "source_count": int,
+            "formatted_output": str (for markdown/text formats)
+        }
+    """
+    if format not in ("markdown", "json", "text"):
+        return make_error(
+            error=f"Unknown format '{format}'",
+            action="Use: markdown, json, or text",
+        )
+
+    try:
+        client = get_client()
+
+        # Get notebook details
+        notebook_data = client.get_notebook(notebook_id)
+        if not notebook_data:
+            return make_error(
+                error="Notebook not found",
+                action="Verify the notebook_id is correct",
+                details=f"No notebook found with ID: {notebook_id}"
+            )
+
+        # Parse notebook structure
+        title = "Untitled"
+        sources_list = []
+
+        if isinstance(notebook_data, list):
+            if len(notebook_data) > 0:
+                title = notebook_data[0] or "Untitled"
+            if len(notebook_data) > 1 and isinstance(notebook_data[1], list):
+                sources_list = notebook_data[1]
+
+        result = {
+            "status": "success",
+            "notebook_id": notebook_id,
+            "title": title,
+            "format": format,
+            "summary": None,
+            "sources": [],
+            "total_chars": 0,
+            "source_count": 0,
+        }
+
+        # Get notebook summary if requested
+        if include_summary:
+            try:
+                summary_result = client.get_notebook_summary(notebook_id)
+                if summary_result and isinstance(summary_result, dict):
+                    result["summary"] = summary_result.get("summary", "")
+            except Exception:
+                # Summary is optional, continue without it
+                pass
+
+        # Extract source content if requested
+        if include_sources and sources_list:
+            for source in sources_list:
+                source_id = None
+                source_title = "Unknown"
+
+                # Parse source structure
+                if isinstance(source, list) and len(source) > 0:
+                    source_id = source[0]
+                    if len(source) > 1:
+                        source_title = source[1] or "Untitled"
+
+                if source_id:
+                    try:
+                        content_result = client.get_source_fulltext(source_id)
+                        if content_result and isinstance(content_result, dict):
+                            source_entry = {
+                                "id": source_id,
+                                "title": content_result.get("title", source_title),
+                                "type": content_result.get("source_type", "unknown"),
+                                "content": content_result.get("content", ""),
+                                "char_count": content_result.get("char_count", 0),
+                            }
+                            result["sources"].append(source_entry)
+                            result["total_chars"] += source_entry["char_count"]
+                    except Exception as e:
+                        # Log but continue with other sources
+                        result["sources"].append({
+                            "id": source_id,
+                            "title": source_title,
+                            "type": "error",
+                            "content": f"Failed to extract: {str(e)}",
+                            "char_count": 0,
+                        })
+
+        result["source_count"] = len(result["sources"])
+
+        # Format output based on requested format
+        if format == "markdown":
+            result["formatted_output"] = _format_export_markdown(result)
+        elif format == "text":
+            result["formatted_output"] = _format_export_text(result)
+        # JSON format uses the dict structure directly
+
+        return result
+
+    except AuthExpiredError:
+        return make_error(
+            error="Authentication expired",
+            action="Run 'notebooklm-mcp-auth' to refresh credentials",
+            details="Export failed due to auth error"
+        )
+    except Exception as e:
+        return make_error(
+            error="Export failed",
+            action="Check notebook_id and try again",
+            details=str(e)
+        )
+
+
+def _format_export_markdown(data: dict) -> str:
+    """Format export data as markdown."""
+    lines = [f"# {data['title']}", ""]
+
+    if data.get("summary"):
+        lines.extend(["## Summary", "", data["summary"], ""])
+
+    if data.get("sources"):
+        lines.extend(["## Sources", ""])
+        for source in data["sources"]:
+            lines.extend([
+                f"### {source['title']}",
+                f"*Type: {source['type']} | Characters: {source['char_count']:,}*",
+                "",
+                source["content"],
+                "",
+                "---",
+                ""
+            ])
+
+    return "\n".join(lines)
+
+
+def _format_export_text(data: dict) -> str:
+    """Format export data as plain text."""
+    lines = [data['title'], "=" * len(data['title']), ""]
+
+    if data.get("summary"):
+        lines.extend(["SUMMARY:", data["summary"], ""])
+
+    if data.get("sources"):
+        lines.append("SOURCES:")
+        for i, source in enumerate(data["sources"], 1):
+            lines.extend([
+                f"\n[{i}] {source['title']} ({source['type']})",
+                "-" * 40,
+                source["content"],
+                ""
+            ])
+
+    return "\n".join(lines)
+
+
 @mcp.tool()
 def auth_status() -> dict[str, Any]:
     """Check authentication status and cookie validity.
