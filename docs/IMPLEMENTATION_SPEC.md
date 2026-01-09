@@ -99,12 +99,12 @@ Phase 1: Reliability Hardening     [COMPLETED]
     ├── Structured error responses
     └── auth_status tool
 
-Phase 2: Ultra Feature Support     [PENDING]
+Phase 2: Ultra Feature Support     [COMPLETED]
     ├── Slide deck "long" length option
     ├── Watermark removal for infographics/slides
-    └── Verify feature codes against live API
+    └── API codes need verification via live testing
 
-Phase 3: Legal Research Tools      [PENDING]
+Phase 3: Legal Research Tools      [COMPLETED]
     ├── batch_query tool
     ├── export tool
     └── High-volume query support
@@ -823,14 +823,14 @@ The `action` field tells Claude (and the user) exactly what to do to resolve the
 - [x] auth_status detects missing credentials
 - [x] auth_status warns on old cookies
 
-### Phase 2 (Pending)
+### Phase 2 (Implemented - Needs Live Testing)
 - [ ] Slide deck "long" option works
-- [ ] Verify long length API code
+- [ ] Verify long length API code (assumed code 4)
 - [ ] Watermark removal works for infographics
 - [ ] Watermark removal works for slide decks
-- [ ] Verify watermark API parameter
+- [ ] Verify watermark API parameter position
 
-### Phase 3 (Pending)
+### Phase 3 (Implemented - Needs Live Testing)
 - [ ] batch_query processes multiple queries
 - [ ] batch_query handles errors gracefully
 - [ ] batch_query stops on auth errors
@@ -847,3 +847,4 @@ The `action` field tells Claude (and the user) exactly what to do to resolve the
 |---------|------|---------|
 | 1.0 | Jan 2026 | Initial Phase 1 implementation |
 | 2.0 | Jan 2026 | Complete spec with Phases 2-4 |
+| 2.1 | Jan 2026 | Phase 2 & 3 implemented, ready for live testing |
