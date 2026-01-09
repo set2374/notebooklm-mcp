@@ -198,6 +198,7 @@ class NotebookLMClient:
     # Slide Deck length codes
     SLIDE_DECK_LENGTH_SHORT = 1
     SLIDE_DECK_LENGTH_DEFAULT = 3
+    SLIDE_DECK_LENGTH_LONG = 4      # Ultra subscription only
 
     # Chat configuration goal/style codes
     CHAT_GOAL_DEFAULT = 1
@@ -2081,17 +2082,27 @@ class NotebookLMClient:
         detail_level_code: int = 2,  # INFOGRAPHIC_DETAIL_STANDARD
         language: str = "en",
         focus_prompt: str = "",
+        remove_watermark: bool = False,  # Ultra subscription only
     ) -> dict | None:
         """Create an Infographic from notebook sources.
-    """
+
+        Args:
+            notebook_id: Notebook UUID
+            source_ids: List of source UUIDs to include
+            orientation_code: 1=landscape, 2=portrait, 3=square
+            detail_level_code: 1=concise, 2=standard, 3=detailed
+            language: BCP-47 language code
+            focus_prompt: Optional focus text
+            remove_watermark: Remove watermark (Ultra subscription only)
+        """
         client = self._get_client()
 
         # Build source IDs in the nested format: [[[id1]], [[id2]], ...]
         sources_nested = [[[sid]] for sid in source_ids]
 
-        # Options at position 14: [[focus_prompt, language, null, orientation, detail_level]]
-        # Captured RPC structure was [[null, "en", null, 1, 2]]
-        infographic_options = [[focus_prompt or None, language, None, orientation_code, detail_level_code]]
+        # Options at position 14: [[focus_prompt, language, null, orientation, detail_level, watermark_flag]]
+        # Note: watermark_flag position (index 5) needs verification via network capture
+        infographic_options = [[focus_prompt or None, language, None, orientation_code, detail_level_code, remove_watermark]]
 
         content = [
             None, None,
@@ -2129,6 +2140,7 @@ class NotebookLMClient:
                 "orientation": self._get_infographic_orientation_name(orientation_code),
                 "detail_level": self._get_infographic_detail_name(detail_level_code),
                 "language": language,
+                "remove_watermark": remove_watermark,
             }
 
         return None
@@ -2141,16 +2153,27 @@ class NotebookLMClient:
         length_code: int = 3,  # SLIDE_DECK_LENGTH_DEFAULT
         language: str = "en",
         focus_prompt: str = "",
+        remove_watermark: bool = False,  # Ultra subscription only
     ) -> dict | None:
         """Create a Slide Deck from notebook sources.
-    """
+
+        Args:
+            notebook_id: Notebook UUID
+            source_ids: List of source UUIDs to include
+            format_code: 1=detailed_deck, 2=presenter_slides
+            length_code: 1=short, 3=default, 4=long (Ultra only)
+            language: BCP-47 language code
+            focus_prompt: Optional focus text
+            remove_watermark: Remove watermark (Ultra subscription only)
+        """
         client = self._get_client()
 
         # Build source IDs in the nested format: [[[id1]], [[id2]], ...]
         sources_nested = [[[sid]] for sid in source_ids]
 
-        # Options at position 16: [[focus_prompt, language, format, length]]
-        slide_deck_options = [[focus_prompt or None, language, format_code, length_code]]
+        # Options at position 16: [[focus_prompt, language, format, length, watermark_flag]]
+        # Note: watermark_flag position (index 4) needs verification via network capture
+        slide_deck_options = [[focus_prompt or None, language, format_code, length_code, remove_watermark]]
 
         content = [
             None, None,
@@ -2188,6 +2211,7 @@ class NotebookLMClient:
                 "format": self._get_slide_deck_format_name(format_code),
                 "length": self._get_slide_deck_length_name(length_code),
                 "language": language,
+                "remove_watermark": remove_watermark,
             }
 
         return None
@@ -2750,6 +2774,7 @@ class NotebookLMClient:
         lengths = {
             1: "short",
             3: "default",
+            4: "long",  # Ultra subscription only
         }
         return lengths.get(length_code, "unknown")
 

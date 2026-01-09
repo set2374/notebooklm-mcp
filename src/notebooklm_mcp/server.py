@@ -1225,6 +1225,7 @@ def infographic_create(
     detail_level: str = "standard",
     language: str = "en",
     focus_prompt: str = "",
+    remove_watermark: bool = False,
     confirm: bool = False,
 ) -> dict[str, Any]:
     """Generate infographic. Requires confirm=True after user approval.
@@ -1236,6 +1237,7 @@ def infographic_create(
         detail_level: concise|standard|detailed
         language: BCP-47 code (en, es, fr, de, ja)
         focus_prompt: Optional focus text
+        remove_watermark: Remove watermark (requires Ultra subscription)
         confirm: Must be True after user approval
     """
     if not confirm:
@@ -1248,6 +1250,7 @@ def infographic_create(
                 "detail_level": detail_level,
                 "language": language,
                 "focus_prompt": focus_prompt or "(none)",
+                "remove_watermark": remove_watermark,
                 "source_ids": source_ids or "all sources",
             },
             "note": "Set confirm=True after user approves these settings.",
@@ -1300,6 +1303,7 @@ def infographic_create(
             detail_level_code=detail_code,
             language=language,
             focus_prompt=focus_prompt,
+            remove_watermark=remove_watermark,
         )
 
         if result:
@@ -1310,6 +1314,7 @@ def infographic_create(
                 "orientation": result["orientation"],
                 "detail_level": result["detail_level"],
                 "language": result["language"],
+                "remove_watermark": result.get("remove_watermark", False),
                 "generation_status": result["status"],
                 "message": "Infographic generation started. Use studio_status to check progress.",
                 "notebook_url": f"https://notebooklm.google.com/notebook/{notebook_id}",
@@ -1327,6 +1332,7 @@ def slide_deck_create(
     length: str = "default",
     language: str = "en",
     focus_prompt: str = "",
+    remove_watermark: bool = False,
     confirm: bool = False,
 ) -> dict[str, Any]:
     """Generate slide deck. Requires confirm=True after user approval.
@@ -1335,9 +1341,10 @@ def slide_deck_create(
         notebook_id: Notebook UUID
         source_ids: Source IDs (default: all)
         format: detailed_deck|presenter_slides
-        length: short|default
+        length: short|default|long (long requires Ultra subscription)
         language: BCP-47 code (en, es, fr, de, ja)
         focus_prompt: Optional focus text
+        remove_watermark: Remove watermark (requires Ultra subscription)
         confirm: Must be True after user approval
     """
     if not confirm:
@@ -1350,6 +1357,7 @@ def slide_deck_create(
                 "length": length,
                 "language": language,
                 "focus_prompt": focus_prompt or "(none)",
+                "remove_watermark": remove_watermark,
                 "source_ids": source_ids or "all sources",
             },
             "note": "Set confirm=True after user approves these settings.",
@@ -1374,12 +1382,13 @@ def slide_deck_create(
         length_codes = {
             "short": 1,
             "default": 3,
+            "long": 4,  # Ultra subscription only
         }
         length_code = length_codes.get(length.lower())
         if length_code is None:
             return {
                 "status": "error",
-                "error": f"Unknown length '{length}'. Use: short or default.",
+                "error": f"Unknown length '{length}'. Use: short, default, or long (Ultra only).",
             }
 
         # Get source IDs if not provided
@@ -1400,6 +1409,7 @@ def slide_deck_create(
             length_code=length_code,
             language=language,
             focus_prompt=focus_prompt,
+            remove_watermark=remove_watermark,
         )
 
         if result:
@@ -1410,6 +1420,7 @@ def slide_deck_create(
                 "format": result["format"],
                 "length": result["length"],
                 "language": result["language"],
+                "remove_watermark": result.get("remove_watermark", False),
                 "generation_status": result["status"],
                 "message": "Slide deck generation started. Use studio_status to check progress.",
                 "notebook_url": f"https://notebooklm.google.com/notebook/{notebook_id}",
