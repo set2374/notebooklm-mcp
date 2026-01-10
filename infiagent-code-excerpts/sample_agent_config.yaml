@@ -1,0 +1,120 @@
+# InfiAgent Sample Agent Configuration
+# Source: config/agent_library/Default/level_1_agents.yaml
+# Demonstrates YAML-based agent definition pattern
+
+# Level 1 Sub-Agent: Answer questions from papers
+answer_from_papers:
+  level: 1                                    # Hierarchy level
+  type: llm_call_agent                        # Type: LLM-based agent (vs tool_call_agent)
+
+  # Tools available to this agent
+  # Key insight: Agents can only use tools in their list
+  available_tools:
+    - parse_document                          # Level 0 tool
+    - file_read                               # Level 0 tool
+    - dir_list                                # Level 0 tool
+    - dir_create                              # Level 0 tool
+    - file_write                              # Level 0 tool
+    - reference_list                          # Level 0 tool
+    - reference_add                           # Level 0 tool
+    - reference_delete                        # Level 0 tool
+    - final_output                            # Required: termination tool
+    - vision_tool                             # Level 0 tool
+    # Note: No sub-agents available - leaf agent
+
+  max_turns: 100                              # Safety limit
+  model_type: claude-3-7-sonnet-20250219      # Model specification
+
+  # Agent-specific prompts
+  prompts:
+    agent_responsibility: |
+      你的职责是根据问题从单个或多个文档中得到答案，或总结，或分析，格式可以是 word，pdf 等
+    agent_workflow: |
+      **你的流程:**
+      原则！！：如果要回答多个文档的多个问题，你应该阅读一篇文章记录一次回答，一个任务多篇文章，增量式的记录在一个文件中！
+      1. 你应该根据提供的论文地址，读取论文内容，并根据需求从文章中得到答案或分析或总结
+
+  # Tool definition (for LLM tool calling)
+  name: "answer_from_papers"
+  description: "你的职责是根据问题从单个或多个文档中得到答案，或总结，或分析"
+  parameters:
+    type: "object"
+    properties:
+      task_id:
+        type: "string"
+        description: "任务的唯一ID。"
+      task_input:
+        type: "string"
+        description: "具体的任务要求，应该提供一篇或多篇文章的地址，不要提供原文内容。"
+      max_turns:
+        type: "integer"
+        default: 100
+        description: "审查过程的最大轮次。"
+    required: ["task_id", "task_input"]
+
+---
+# Level 0 Tool Example (for comparison)
+# Source: config/agent_library/Default/level_0_tools.yaml
+
+file_read:
+  level: 0                                    # Base level tool
+  type: tool_call_agent                       # Type: HTTP tool call (not LLM)
+  name: "file_read"
+  description: "读取指定文件的内容。可以读取单个或多个文件。"
+  parameters:
+    type: "object"
+    properties:
+      path:
+        type: "array"
+        items:
+          type: "string"
+        description: "文件路径数组。单个文件传 ['file.txt']，多个文件传 ['file1.txt', 'file2.txt']。"
+      start_line:
+        type: "integer"
+        description: "读取起始行号（从1开始）"
+      end_line:
+        type: "integer"
+        description: "读取结束行号（包含）"
+      show_line_numbers:
+        type: "boolean"
+        default: true
+        description: "是否显示行号"
+    required: ["path"]
+
+---
+# Alpha Agent (Top-level coordinator)
+# This is the entry point agent
+
+alpha_agent:
+  level: 0
+  type: llm_call_agent
+  available_tools:
+    # Level 0 tools (direct)
+    - file_read
+    - file_write
+    - dir_list
+    - execute_code
+    - web_search
+    # Level 1 sub-agents (can delegate to)
+    - answer_from_papers
+    - get_data_from_arxiv
+    - get_data_from_web_search
+    - writing_agent
+    - coding_agent
+    # Level -1 special agent
+    - judge_agent
+    # Termination
+    - final_output
+
+  model_type: claude-3-7-sonnet-20250219
+  max_turns: 100
+
+  prompts:
+    agent_responsibility: |
+      作为最高级智能体，负责理解用户需求，分解任务，调度子智能体完成复杂任务
+    agent_workflow: |
+      1. 分析用户输入，确定任务类型和范围
+      2. 如需要，将任务分解为子任务
+      3. 调用appropriate子智能体或直接使用工具
+      4. 整合结果，必要时进行验证
+      5. 输出最终结果
